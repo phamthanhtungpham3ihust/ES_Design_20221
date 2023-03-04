@@ -37,10 +37,10 @@ typedef void (*Task_FunctionTypeDef) (void);
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define TransmitBuff_SIZE	35
+#define TransmitBuff_SIZE	70
 #define ReceiveBuff_SIZE	10
-#define MainBuff_SIZE		8
-#define Queue_SIZE			3
+#define MainBuff_SIZE		9
+#define Queue_SIZE			45
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -58,6 +58,7 @@ DMA_HandleTypeDef hdma_usart1_tx;
 
 /* USER CODE BEGIN PV */
 Task_FunctionTypeDef queue[Queue_SIZE];
+Task_FunctionTypeDef UART_Transmit_Func = NULL;
 
 /* Data of DHT11 Sensor */
 float temp = 0;
@@ -75,7 +76,7 @@ uint32_t IC_Val1 = 0;
 uint32_t IC_Val2 = 0;
 uint32_t Difference = 0;
 uint8_t Is_First_Captured = 0;  // is the first value captured ?
-uint8_t Distance  = 0;
+uint8_t distance  = 0;
 
 /* Buffer Array */
 uint8_t RxBuffer[ReceiveBuff_SIZE];
@@ -85,6 +86,8 @@ uint8_t MainBuffer[MainBuff_SIZE];
 /* Period Time */
 uint8_t DHT11_transmit_period;
 uint8_t HCSR04_transmit_period;
+uint8_t temp_transmit_period;
+uint8_t humi_transmit_period;
 
 /* Temperature Threshold */
 uint8_t temp_threshold;
@@ -104,13 +107,59 @@ uint32_t start_tick = 0;
 uint32_t stop_tick = 0;
 uint32_t execute_tick = 0;
 
-bool read_sensor_flag = 0;
+uint8_t humi_cnt = 0;
+uint8_t temp_cnt = 0;
+uint8_t dist_cnt = 0;
+
+/* Enable Flag */
+bool read_DHT11_flag = 0;
+bool read_HCSR04_flag = 0;
+bool transmit_DHT11_data_flag = 0;
+bool transmit_temp_data_flag = 0;
+bool transmit_humi_data_flag = 0;
+bool transmit_dist_data_flag = 0;
+bool transmit_DHT11_HCSR04_data_flag = 0;
+bool transmit_temp_HCSR04_data_flag = 0;
+bool transmit_humi_HCSR04_data_flag = 0;
+bool lcd_display_flag = 0;
+bool uart_enable_cmd_1 = 0;
+bool uart_enable_cmd_2 = 0;
+
+bool uart_enable_cmd_1_tmp = 0;
+bool uart_enable_cmd_2_tmp = 0;
+
+bool button_enable = 0;
+bool isHumiTrans = 0;
+bool isDistTrans = 0;
 
 uint16_t Count = 0;
 uint16_t cnt = 0;
 uint16_t cnt_1 = 0;
 uint8_t isr_cnt = 0;
 
+int isr_tick_start;
+int isr_tick_stop;
+int isr_execute_tick;
+
+int dht11_tick_old = 0;
+int dht11_tick_new = 0;
+int dht11_tick_period;
+
+int lcd_tick_old = 0;
+int lcd_tick_new = 0;
+int lcd_tick_period;
+
+int hcsr04_tick_old = 0;
+int hcsr04_tick_new = 0;
+int hcsr04_tick_period;
+
+int old_tick = 0;
+int new_tick = 0;
+
+int task_idx = 0;
+int old_task_idx;
+int execute_time[46];
+int idx = 4;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -134,10 +183,14 @@ void processRecCmd(size_t len);
 void DHT11_UART_Transmit(void);
 
 // Truyen du lieu HSR04 qua UART
-void HSR04_UART_Transmit(void);
+void HCSR04_UART_Transmit(void);
 
 // Truyen du lieu DHT11 và HSR04 qua UART
 void DHT11_HSR04_UART_Transmit(void);
+
+void Temp_HCSR04_UART_Transmit(void);
+
+void Humi_HCSR04_UART_Transmit(void);
 
 // Delay microsecond
 void delay_us(uint16_t time);
@@ -161,11 +214,15 @@ uint8_t DHT11_Check_Response(void);
 
 uint8_t DHT11_Read(void);
 
-// �?�?c cảm biến DHT11
+// �?�?c cảm biến DHT11
 void Read_DHT11_Sensor(void);
 
-// �?�?c cảm biến HCSR04
+// �?�?c cảm biến HCSR04
 void Read_HCSR04_Sensor(void);
+
+void Temp_UART_Transmit(void);
+
+void Humi_UART_Transmit(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -176,11 +233,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
 	start_tick = HAL_GetTick();
 	UNUSED(GPIO_Pin);
-	if(GPIO_Pin == GPIO_PIN_0){
+	if(GPIO_Pin == GPIO_PIN_0 && button_enable == true){
 		isr_cnt++;
 		/* Nhan nut lan 1, dat chu ky truyen UART cac cam bien la 1s */
 		if(isr_cnt == 1){
-			DHT11_transmit_period = 1;
+			temp_transmit_period = 1;
+			humi_transmit_period = 1;
 			HCSR04_transmit_period = 1;
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
@@ -188,7 +246,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		}
 		/* Nhan nut lan 2, dat chu ky truyen UART cac cam bien la 2s */
 		else if(isr_cnt == 2){
-			DHT11_transmit_period = 2;
+			temp_transmit_period = 2;
+			humi_transmit_period = 2;
 			HCSR04_transmit_period = 2;
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_RESET);
@@ -196,7 +255,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		}
 		/* Nhan nut lan 3, dat chu ky truyen UART cac cam bien la 3s */
 		else if(isr_cnt == 3){
-			DHT11_transmit_period = 3;
+			temp_transmit_period = 3;
+			humi_transmit_period = 3;
 			HCSR04_transmit_period = 3;
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
@@ -243,14 +303,14 @@ void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim)
 				Difference = (0xffff - IC_Val1) + IC_Val2;
 			}
 
-			Distance = Difference * .034/2;
+			distance = Difference * .034/2;
 			Is_First_Captured = 0; // set it back to false
 
 			// set polarity to rising edge
 			__HAL_TIM_SET_CAPTUREPOLARITY(htim, TIM_CHANNEL_1, TIM_INPUTCHANNELPOLARITY_RISING);
 			__HAL_TIM_DISABLE_IT(&htim1, TIM_IT_CC1);
-			stop_tick = HAL_GetTick();
-			execute_tick = stop_tick - start_tick;
+			//stop_tick = HAL_GetTick();
+			//execute_tick = stop_tick - start_tick;
 
 		}
 	}
@@ -266,7 +326,7 @@ void Read_HCSR04_Sensor(void)
 
 void LCD_Display(void){
 	sprintf(data_line_1,"TEMP HUMI DIST");
-	sprintf(data_line_2,"%dC %d  %d", (int)temp, (int)humi,(int)Distance);
+	sprintf(data_line_2,"%dC %d  %d", (int)temp, (int)humi,(int)distance);
 	lcd16x2_1stLine();
 	lcd16x2_printf(data_line_1);
 	lcd16x2_2ndLine();
@@ -275,7 +335,9 @@ void LCD_Display(void){
 
 void DHT11_UART_Transmit(void){
 	memset(TxBuffer, 0, TransmitBuff_SIZE);
-	sprintf((char*)TxBuffer, "Temp: %doC, Humi: %d%%\n", (int) temp, (int) humi);
+	new_tick = HAL_GetTick();
+	sprintf((char*)TxBuffer, "\nTemperature: %doC, Humidity: %d%% %d\n", (int) temp, (int) humi, (int) (new_tick - old_tick));
+	old_tick = new_tick;
 	for(size_t i = 0; i < sizeof(TxBuffer); i++){
 		if(TxBuffer[i] == '\0'){
 			len = i + 1;
@@ -284,9 +346,55 @@ void DHT11_UART_Transmit(void){
 	HAL_UART_Transmit_DMA(&huart1, TxBuffer, sizeof(TxBuffer));
 }
 
-void HSR04_UART_Transmit(void){
+void Temp_UART_Transmit(void){
+	new_tick = HAL_GetTick();
 	memset(TxBuffer, 0, TransmitBuff_SIZE);
-	sprintf((char*)TxBuffer, "Dist: %d cm\n", (int)Distance);
+	sprintf((char*)TxBuffer, "\nTemperature: %doC : %d\n", (int) temp, (int)(new_tick - old_tick));
+	old_tick = new_tick;
+	for(size_t i = 0; i < sizeof(TxBuffer); i++){
+		if(TxBuffer[i] == '\0'){
+			len = i + 1;
+		}
+	}
+	HAL_UART_Transmit_DMA(&huart1, TxBuffer, sizeof(TxBuffer));
+}
+
+void Humi_UART_Transmit(void){
+	memset(TxBuffer, 0, TransmitBuff_SIZE);
+	sprintf((char*)TxBuffer, "\nHumidity: %d%%\n", (int) humi);
+	for(size_t i = 0; i < sizeof(TxBuffer); i++){
+		if(TxBuffer[i] == '\0'){
+			len = i + 1;
+		}
+	}
+	HAL_UART_Transmit_DMA(&huart1, TxBuffer, sizeof(TxBuffer));
+}
+
+void Humi_HCSR04_UART_Transmit(void){
+	memset(TxBuffer, 0, TransmitBuff_SIZE);
+	sprintf((char*)TxBuffer, "\nHumidity: %d%%, Distance: %d cm\n", (int) humi, (int) distance);
+	for(size_t i = 0; i < sizeof(TxBuffer); i++){
+		if(TxBuffer[i] == '\0'){
+			len = i + 1;
+		}
+	}
+	HAL_UART_Transmit_DMA(&huart1, TxBuffer, sizeof(TxBuffer));
+}
+
+void Temp_HCSR04_UART_Transmit(void){
+	memset(TxBuffer, 0, TransmitBuff_SIZE);
+	sprintf((char*)TxBuffer, "\nTemperature: %doC, Distance: %d cm\n", (int) temp, (int) distance);
+	for(size_t i = 0; i < sizeof(TxBuffer); i++){
+		if(TxBuffer[i] == '\0'){
+			len = i + 1;
+		}
+	}
+	HAL_UART_Transmit_DMA(&huart1, TxBuffer, sizeof(TxBuffer));
+}
+
+void HCSR04_UART_Transmit(void){
+	memset(TxBuffer, 0, TransmitBuff_SIZE);
+	sprintf((char*)TxBuffer, "\nDistance: %d cm\n", (int)distance);
 	for(size_t i = 0; i < sizeof(TxBuffer); i++){
 		if(TxBuffer[i] == '\0'){
 			len = i + 1;
@@ -296,9 +404,9 @@ void HSR04_UART_Transmit(void){
 
 }
 
-void DHT11_HSR04_UART_Transmit(void){
+void DHT11_HCSR04_UART_Transmit(void){
 	memset(TxBuffer, 0, TransmitBuff_SIZE);
-	sprintf((char*)TxBuffer, "Temp: %doC, Humi: %d%%, Dist: %dcm", (int) temp, (int) humi, (int)Distance);
+	sprintf((char*)TxBuffer, "\nTemperature: %doC, Humidity: %d%%, Distance: %d cm, Time: %d\n", (int) temp, (int) humi, (int)distance, (int)HAL_GetTick());
 	for(size_t i = 0; i < sizeof(TxBuffer); i++){
 		if(TxBuffer[i] == '\0'){
 			len = i + 1;
@@ -308,36 +416,89 @@ void DHT11_HSR04_UART_Transmit(void){
 }
 
 void processRecCmd(size_t len){
-	if(MainBuffer[0] != 0x00 || MainBuffer[len-1] != 0x07){
+	if(MainBuffer[0] != 0x00 || MainBuffer[len-1] != 0x08){
 		return;
 	};
 
 	uint8_t cmd_type = MainBuffer[cmd_index]; // MainBuffer[1]
 
 	switch (cmd_type) {
-		case 0x01:
-			/* some codes */
-			DHT11_UART_Transmit();
-			//HSR04_UART_Transmit();
-		  break;
-
 		case 0x02:
 			/* some codes */
-			//HSR04_UART_Transmit();
-			//DHT11_HSR04_UART_Transmit();
+			uart_enable_cmd_2_tmp = true;
+			uart_enable_cmd_1_tmp = false;
+			button_enable = 0;
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
+			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
+			isr_cnt = 0;
+			temp_cnt = 0;
+			humi_cnt = 0;
+			dist_cnt = 0;
+			transmit_DHT11_data_flag = 0;
+			transmit_temp_data_flag = 0;
+			transmit_humi_data_flag = 0;
+			transmit_dist_data_flag = 0;
+			transmit_DHT11_HCSR04_data_flag = 0;
+			transmit_temp_HCSR04_data_flag = 0;
+			transmit_humi_HCSR04_data_flag = 0;
 
+			isDistTrans = 0;
+			isHumiTrans = 0;
+
+			temp_threshold = MainBuffer[5];
+			humi_threshold = MainBuffer[6];
+			dist_threshold = MainBuffer[7];
+			if(MainBuffer[2] == 0x01){
+				temp_transmit_period = 1;
+			}
+			else temp_transmit_period = 0;
+
+			if(MainBuffer[3] == 0x01){
+				humi_transmit_period = 1;
+			}
+			else humi_transmit_period = 0;
+
+			if(MainBuffer[4] == 0x01){
+				HCSR04_transmit_period = 1;
+			}
+			else HCSR04_transmit_period = 0;
+
+		  break;
+
+		case 0x01:
+			/* some codes */
+			uart_enable_cmd_1_tmp = true;
+			uart_enable_cmd_2_tmp = false;
+			button_enable = true;
 			/* Xoa thong so cai dat tu nut nhan */
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, GPIO_PIN_SET);
 			HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, GPIO_PIN_SET);
 			isr_cnt = 0;
 
+			/* Xoa cac co cho phep */
+			transmit_DHT11_data_flag = 0;
+			transmit_temp_data_flag = 0;
+			transmit_humi_data_flag = 0;
+			transmit_dist_data_flag = 0;
+			transmit_DHT11_HCSR04_data_flag = 0;
+			transmit_temp_HCSR04_data_flag = 0;
+			transmit_humi_HCSR04_data_flag = 0;
+
+			isDistTrans = 0;
+			isHumiTrans = 0;
+
 			/* Dat cac thong so cai dat tu lenh UART */
-			DHT11_transmit_period = MainBuffer[2];
-			HCSR04_transmit_period = MainBuffer[3];
-			temp_threshold = MainBuffer[4];
-			humi_threshold = MainBuffer[5];
-			dist_threshold = MainBuffer[6];
+			temp_transmit_period = MainBuffer[2];
+			humi_transmit_period = MainBuffer[3];
+			HCSR04_transmit_period = MainBuffer[4];
+			temp_threshold = MainBuffer[5];
+			humi_threshold = MainBuffer[6];
+			dist_threshold = MainBuffer[7];
+			temp_cnt = 0;
+			humi_cnt = 0;
+			dist_cnt = 0;
 		  break;
 
 		default:
@@ -362,11 +523,83 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size){
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   // Check which version of the timer triggered this callback and toggle LED
+  isr_tick_start = HAL_GetTick();
   if (htim == &htim4)
   {
-	  Count++;
-	  read_sensor_flag = true;
+	  old_task_idx = task_idx;
+	  task_idx++;
+	  __HAL_TIM_SET_AUTORELOAD(&htim4, execute_time[task_idx]);
+	  //htim4.Init.Period = execute_time[task_idx];
+	  __HAL_TIM_SET_COUNTER(&htim4,0);
+	  if(queue[old_task_idx] == Read_DHT11_Sensor){
+		  read_DHT11_flag = true;
+	  }
+	  else if(queue[old_task_idx] == Read_HCSR04_Sensor){
+		  read_HCSR04_flag = true;
+	  }
+	  else if(queue[old_task_idx] == LCD_Display){
+		  lcd_display_flag = true;
+	  }
+	  else if(queue[old_task_idx] == DHT11_UART_Transmit){
+		  humi_cnt++;
+		  temp_cnt++;
+		  dist_cnt++;
+
+		  if(uart_enable_cmd_1_tmp){
+			  uart_enable_cmd_1 = true;
+		  }
+		  else{
+			  uart_enable_cmd_1 = false;
+		  }
+
+		  if(uart_enable_cmd_2_tmp){
+			  uart_enable_cmd_2 = true;
+		  }
+		  else{
+			  uart_enable_cmd_2 = false;
+		  }
+
+		  if(((temp_cnt - 1) % temp_transmit_period) == 0 && ((humi_cnt - 1) % humi_transmit_period) == 0 && ((dist_cnt - 1) % HCSR04_transmit_period) == 0 && temp_transmit_period != 0 && humi_transmit_period !=0 && HCSR04_transmit_period != 0){
+			  transmit_DHT11_HCSR04_data_flag = true;
+			  isHumiTrans = true;
+			  isDistTrans = true;
+		  }
+		  else if(((temp_cnt - 1) % temp_transmit_period) == 0 && ((humi_cnt - 1) % humi_transmit_period) == 0 && temp_transmit_period != 0 && humi_transmit_period != 0){
+			  transmit_DHT11_data_flag = true;
+			  isHumiTrans = true;
+		  }
+		  else if(((temp_cnt - 1) % temp_transmit_period) == 0 && ((dist_cnt - 1) % HCSR04_transmit_period) == 0 && temp_transmit_period !=0 && HCSR04_transmit_period != 0){
+			  transmit_temp_HCSR04_data_flag = true;
+			  isDistTrans = true;
+		  }
+		  else if(((temp_cnt - 1) % temp_transmit_period) == 0  && temp_transmit_period != 0){
+			  transmit_temp_data_flag = true;
+			  isDistTrans = false;
+			  isHumiTrans = false;
+
+		  }
+
+		  if(((humi_cnt - 1) % humi_transmit_period) == 0 && ((dist_cnt - 1) % HCSR04_transmit_period) == 0  && HCSR04_transmit_period != 0 && humi_transmit_period !=0){
+			  if(isHumiTrans == false && isDistTrans == false){
+				  transmit_humi_HCSR04_data_flag = true;
+				  isDistTrans = true;
+			  }
+		  }
+		  else if(((humi_cnt - 1) % humi_transmit_period) == 0  && humi_transmit_period !=0){
+			  if(isHumiTrans == false) transmit_humi_data_flag = true;
+		  }
+
+		  if(((dist_cnt - 1) % HCSR04_transmit_period) == 0  && HCSR04_transmit_period != 0){
+			  if(isDistTrans == false) transmit_dist_data_flag = true;
+		  }
+	  }
+	  if(task_idx == 45){
+	  	  task_idx = 0;
+	  }
   }
+  isr_tick_stop = HAL_GetTick();
+  isr_execute_tick = isr_tick_stop - isr_tick_start;
+
 }
 
 void Set_Pin_Output (GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin)
@@ -489,10 +722,57 @@ int main(void)
   /* USER CODE BEGIN 2 */
   queue[0] = Read_HCSR04_Sensor;
   queue[1] = Read_DHT11_Sensor;
+  queue[4] = DHT11_UART_Transmit;
+  queue[15] = DHT11_UART_Transmit;
+  queue[26] = DHT11_UART_Transmit;
+  queue[37] = DHT11_UART_Transmit;
   queue[2] = LCD_Display;
+  queue[3] = Read_HCSR04_Sensor;
+
+  for(uint8_t i = 5; i <= 44; ){
+	  queue[i] = LCD_Display;
+	  if(i == 13 || i == 24 || i == 35){
+		  i = i + 3;
+	  }
+	  else{
+		  i = i + 2;
+	  }
+  }
+
+  for(uint8_t i = 6; i <= 43; ){
+  	  queue[i] = Read_HCSR04_Sensor;
+  	  if(i == 14 || i == 25 || i == 36){
+  		  i = i + 3;
+  	  }
+  	  else{
+  		  i = i + 2;
+  	  }
+    }
+
+  for(uint8_t i = 0; i <= 45 ; i++){
+	  execute_time[i] = 500 - 1;
+  }
+
+  execute_time[1] = 1000  - 1;
+
+  for(uint8_t i = 4; i <= 37; i = i + 11){
+	  execute_time[i] = 1000  - 1;
+  };
+
+  for(uint8_t i = 7; i <= 44; ){
+    	  execute_time[i] = 1500 - 1;
+    	  if(i == 13 || i == 24 || i == 35){
+    		  i = i + 5;
+    	  }
+    	  else{
+    		  i = i + 2;
+    	  }
+   };
+
   lcd16x2_init_4bits(GPIOB, RS_Pin, E_Pin, GPIOA, GPIO_PIN_3, GPIO_PIN_4, GPIO_PIN_5, GPIO_PIN_6);
 
   HAL_TIM_Base_Start_IT(&htim4);
+  HAL_TIM_Base_Start(&htim1);
   __HAL_TIM_ENABLE_IT(&htim4, TIM_IT_UPDATE);
   HAL_TIM_IC_Start_IT(&htim1, TIM_CHANNEL_1);
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1, RxBuffer, MainBuff_SIZE);
@@ -507,16 +787,104 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	 // HAL_NVIC_EnableIRQ(EXTI0_IRQn);
-	  if(read_sensor_flag){
-		  read_sensor_flag = 0;
-		  //DHT_ReadTempHum(&DHT11);
-		  //temp = DHT11.Temp;
-		  //humi = DHT11.Humi;
-		  Read_DHT11_Sensor();
+
+	  if(read_DHT11_flag){
+	      read_DHT11_flag = 0;
+	      dht11_tick_new = HAL_GetTick();
+	      Read_DHT11_Sensor();
+	      dht11_tick_period = dht11_tick_new - dht11_tick_old;
+	      dht11_tick_old = dht11_tick_new;
 	  }
-
-
+	  else if(read_HCSR04_flag){
+		  read_HCSR04_flag = 0;
+		  hcsr04_tick_new = HAL_GetTick();
+		  Read_HCSR04_Sensor();
+		  hcsr04_tick_period = hcsr04_tick_new - hcsr04_tick_old;
+		  hcsr04_tick_old = hcsr04_tick_new;
+	  }
+	  else if(lcd_display_flag){
+		  lcd_display_flag = 0;
+		  lcd_tick_new = HAL_GetTick();
+		  LCD_Display();
+		  lcd_tick_period = lcd_tick_new - lcd_tick_old;
+		  lcd_tick_old = lcd_tick_new;
+	  }
+	  else if(transmit_DHT11_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_DHT11_data_flag = 0;
+		  DHT11_UART_Transmit();
+		  temp_cnt = 1;
+		  humi_cnt = 1;
+		  isHumiTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_humi_HCSR04_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_humi_HCSR04_data_flag = 0;
+		  Humi_HCSR04_UART_Transmit();
+		  humi_cnt = 1;
+		  dist_cnt = 1;
+		  isHumiTrans = 0;
+		  isDistTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_temp_HCSR04_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_temp_HCSR04_data_flag = 0;
+		  temp_cnt = 1;
+		  dist_cnt = 1;
+		  Temp_HCSR04_UART_Transmit();
+		  isDistTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_temp_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_temp_data_flag = 0;
+		  temp_cnt = 1;
+		  Temp_UART_Transmit();
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_humi_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_humi_data_flag = 0;
+		  humi_cnt = 1;
+		  Humi_UART_Transmit();
+		  isHumiTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_dist_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_dist_data_flag = 0;
+		  dist_cnt = 1;
+		  HCSR04_UART_Transmit();
+		  isDistTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
+	  else if(transmit_DHT11_HCSR04_data_flag && (uart_enable_cmd_1 || uart_enable_cmd_2)){
+		  transmit_DHT11_HCSR04_data_flag = 0;
+		  dist_cnt = 1;
+		  temp_cnt = 1;
+		  humi_cnt = 1;
+		  DHT11_HCSR04_UART_Transmit();
+		  isDistTrans = 0;
+		  isHumiTrans = 0;
+		  if(uart_enable_cmd_2){
+			  uart_enable_cmd_2_tmp = 0;
+			  uart_enable_cmd_2 = 0;
+		  }
+	  }
   }
   /* USER CODE END 3 */
 }
@@ -708,10 +1076,10 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 1, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
   /* DMA1_Channel5_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 1, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
